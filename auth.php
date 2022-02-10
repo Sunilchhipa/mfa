@@ -33,8 +33,8 @@ require_login(null, false);
 $context = context_user::instance($USER->id);
 $PAGE->set_context($context);
 $PAGE->set_url('/admin/tool/mfa/auth.php');
-$PAGE->set_pagelayout('secure');
-$pagetitle = $SITE->shortname.': '.get_string('mfa', 'tool_mfa');
+$PAGE->set_pagelayout('auth');
+$pagetitle = $SITE->fullname;
 $PAGE->set_title($pagetitle);
 
 // The only page action allowed here is a logout if it was requested.
@@ -60,7 +60,14 @@ $currenturl = new moodle_url('/admin/tool/mfa/auth.php');
 $factor = \tool_mfa\plugininfo\factor::get_next_user_factor();
 // If ok, perform form actions for input factor.
 $form = new login_form($currenturl, array('factor' => $factor));
-if ($form->is_submitted()) {
+if (method_exists($factor, 'form_cancelled') && $form->is_cancelled()) {
+    $factor->form_cancelled();
+    echo $OUTPUT->header();
+    echo $OUTPUT->notification(get_string('resentemail', 'factor_' . $factor->name), 'notifysuccess');
+    $form->display();
+    echo $OUTPUT->footer();
+    die;
+} else if ($form->is_submitted()) {
     if (!$form->is_validated() && !$form->is_cancelled()) {
         // Increment the fail counter for the factor,
         // And let the factor handle locking logic.
@@ -94,7 +101,7 @@ echo $OUTPUT->header();
 
 \tool_mfa\manager::display_debug_notification();
 
-echo $OUTPUT->heading(get_string('pluginname', 'factor_'.$factor->name));
+//echo $OUTPUT->heading(get_string('pluginname', 'factor_'.$factor->name));
 // Check if a notification is required for factor lockouts.
 $remattempts = $factor->get_remaining_attempts();
 if ($remattempts < get_config('tool_mfa', 'lockout')) {

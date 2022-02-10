@@ -46,7 +46,14 @@ class login_form extends \moodleform {
         $mform = $this->_form;
         $factor = $this->_customdata['factor'];
         $mform = $factor->login_form_definition($mform);
-        $this->globalmanager->definition($mform);
+
+        $mform->updateAttributes(array('id' => 'email_verification_code_form'));
+        $buttonarray = array();
+        $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
+        $buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
+        $mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
+        $mform->closeHeaderBefore('buttonar');
+        //$this->globalmanager->definition($mform);
     }
 
     /**
@@ -56,15 +63,16 @@ class login_form extends \moodleform {
     public function definition_after_data() {
         $mform = $this->_form;
         $factor = $this->_customdata['factor'];
+      
+        $mform2 = $factor->login_form_definition_after_data($mform);
+        //$factor->login_form_definition_after_data($mform);
+        //$this->globalmanager->definition_after_data($mform);
 
-        $factor->login_form_definition_after_data($mform);
-        $this->globalmanager->definition_after_data($mform);
-
-        $buttonarray = array();
-        $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
-        $buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
-        $mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
-        $mform->closeHeaderBefore('buttonar');
+        //$buttonarray = array();
+        //$buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
+        //$buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
+        //$mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
+        //$mform->closeHeaderBefore('buttonar');
     }
 
     /**

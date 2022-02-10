@@ -29,12 +29,14 @@ require_once(__DIR__ . '../../../../../../iplookup/lib.php');
 class factor_email_renderer extends plugin_renderer_base {
 
     public function generate_email($instanceid) {
-        global $DB;
+        global $DB, $CFG;
         $instance = $DB->get_record('tool_mfa', array('id' => $instanceid));
         $authurl = new \moodle_url('/admin/tool/mfa/factor/email/email.php',
             array('instance' => $instance->id, 'pass' => 1, 'secret' => $instance->secret));
         $authurlstring = \html_writer::link($authurl, get_string('email:link', 'factor_email'));
-        $messagestrings = array('secret' => $instance->secret, 'link' => $authurlstring);
+        $siteurl = get_host_from_url($CFG->wwwroot);
+        $siteurlstring = \html_writer::link(new \moodle_url('/admin/tool/mfa/auth.php'), $siteurl);
+        $messagestrings = array('secret' => $instance->secret, 'link' => $authurlstring, 'siteurl' => $siteurlstring);
         $geoinfo = iplookup_find_location($instance->createdfromip);
         $info = array('city' => $geoinfo['city'], 'country' => $geoinfo['country']);
         $blockurl = new \moodle_url('/admin/tool/mfa/factor/email/email.php',
