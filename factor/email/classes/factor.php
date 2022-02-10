@@ -166,9 +166,11 @@ class factor extends object_factor_base {
     /**
      * Generates and emails the code for login to the user, stores codes in DB.
      *
+     * @param bool $forceResendEmail
      * @return void
+     * @throws \dml_exception
      */
-    private function generate_and_email_code() {
+    private function generate_and_email_code($forceResendEmail = false) {
         global $DB, $USER;
 
         // Get instance that isnt parent email type (label check).
@@ -213,6 +215,8 @@ class factor extends object_factor_base {
             ));
             $instanceid = $record->id;
             $this->email_verification_code($instanceid);
+        } else if ($forceResendEmail) {
+            $this->email_verification_code($record->id);
         }
     }
 
@@ -268,7 +272,8 @@ class factor extends object_factor_base {
      */
     public function get_no_redirect_urls() {
         $email = new \moodle_url('/admin/tool/mfa/factor/email/email.php');
-        return array($email);
+        $pluginfile = new \moodle_url('/pluginfile.php');
+        return array($email, $pluginfile);
     }
 
     /**
@@ -284,5 +289,14 @@ class factor extends object_factor_base {
             \tool_mfa\plugininfo\factor::STATE_NEUTRAL,
             \tool_mfa\plugininfo\factor::STATE_UNKNOWN,
         );
+    }
+
+    /**
+     * Function to call when user pressed cancel button.
+     * Resend the code again.
+     *
+     */
+    public function form_cancelled() {
+        $this->generate_and_email_code(true);
     }
 }
