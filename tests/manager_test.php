@@ -64,7 +64,7 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
 
         // Now setup a no input factor, and check that weight is automatically added without input.
         $this->set_factor_state('auth', 1, 100);
-        set_config('goodauth', '0', 'factor_auth');
+        set_config('goodauth', 'manual', 'factor_auth');
 
         $this->assertEquals(300, \tool_mfa\manager::get_total_weight());
     }
@@ -81,7 +81,7 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
 
         // Now add a no input factor.
         $this->set_factor_state('auth', 1, 100);
-        set_config('goodauth', '0', 'factor_auth');
+        set_config('goodauth', 'manual', 'factor_auth');
 
         // Check state is now passing.
         $this->assertEquals(\tool_mfa\manager::get_status(), \tool_mfa\plugininfo\factor::STATE_PASS);
@@ -114,7 +114,7 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
 
         // Setup a no input factor.
         $this->set_factor_state('auth', 1, 100);
-        set_config('goodauth', '0', 'factor_auth');
+        set_config('goodauth', 'manual', 'factor_auth');
 
         // Check that is enough to pass.
         $this->assertEquals(\tool_mfa\manager::passed_enough_factors(), true);
@@ -149,6 +149,9 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
             ['/admin/tool/mfa/action.php', 'http://test.server/parent/directory', true],
             ['/', 'http://test.server/parent/directory', true, array('url' => $badparam1)],
             ['/', 'http://test.server/parent/directory', true, array('url' => $badparam2)],
+            ['/admin/tool/securityquestions/set_responses.php', 'http://test.server', false],
+            ['/admin/tool/securityquestions/set_responses.php', 'http://test.server', false, ['delete' => 1]],
+            ['/admin/tool/securityquestions/randompage.php', 'http://test.server', true, ['delete' => 1]],
         ];
     }
 
@@ -170,17 +173,22 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
         global $CFG;
         $this->resetAfterTest(true);
         $user = $this->getDataGenerator()->create_user();
-        $this->setUser($user);
 
         $badurl = new \moodle_url('/');
 
-        // Maintenance mode.
+        // Upgrade checks.
+        $this->setAdminUser();
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::REDIRECT);
-        $CFG->maintenance_enabled = 1;
+        $oldhash = $CFG->allversionshash;
+        $CFG->allversionshash = 'abc';
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::NO_REDIRECT);
-        $CFG->maintenance_enabled = 0;
+        $CFG->allversionshash = $oldhash;
+        $upgradesettings = new \moodle_url('/admin/upgradesettings.php');
+        $this->assertEquals(\tool_mfa\manager::should_require_mfa($upgradesettings, false), \tool_mfa\manager::NO_REDIRECT);
+        $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::REDIRECT);
 
         // Admin not setup.
+        $this->setUser($user);
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::REDIRECT);
         $CFG->adminsetuppending = 1;
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::NO_REDIRECT);
@@ -192,7 +200,9 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
 
         // User not setup properly.
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::REDIRECT);
-        $this->setUser(null);
+        $notsetup = clone($user);
+        unset($notsetup->firstname);
+        $this->setUser($notsetup);
         $this->assertEquals(\tool_mfa\manager::should_require_mfa($badurl, false), \tool_mfa\manager::NO_REDIRECT);
         $this->setUser($user);
 
@@ -341,7 +351,6 @@ class tool_mfa_manager_testcase extends tool_mfa_testcase {
 
     public function test_core_hooks() {
         // Setup test and user.
-        require_once(__DIR__ . '/../../../../config.php');
         global $CFG, $SESSION;
         $this->resetAfterTest(true);
         $user = $this->getDataGenerator()->create_user();

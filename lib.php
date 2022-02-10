@@ -21,7 +21,6 @@
  * @copyright   Catalyst IT
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
-defined('MOODLE_INTERNAL') || die();
 
 /**
  * Main hook.
@@ -38,7 +37,9 @@ function tool_mfa_after_require_login($courseorid = null, $autologinguest = null
         $SESSION->mfa_login_hook_test = true;
     }
 
-    \tool_mfa\manager::require_auth($courseorid, $autologinguest, $cm, $setwantsurltome, $preventredirect);
+    if (empty($SESSION->tool_mfa_authenticated)) {
+        \tool_mfa\manager::require_auth($courseorid, $autologinguest, $cm, $setwantsurltome, $preventredirect);
+    }
 }
 
 /**
@@ -87,4 +88,45 @@ function tool_mfa_after_config() {
             \tool_mfa\manager::require_auth();
         }
     }
+}
+
+function tool_mfa_bulk_user_actions() {
+    return [
+        'tool_mfa_reset_factors' => new action_link(
+            new moodle_url('/admin/tool/mfa/reset_factor.php'),
+            get_string('resetfactor', 'tool_mfa')
+        ),
+    ];
+}
+
+/**
+ * Serves any files for the guidance page.
+ *
+ * @param stdClass $course
+ * @param stdClass $cm
+ * @param context $context
+ * @param string $filearea
+ * @param array $args
+ * @param bool $forcedownload
+ * @param array $options
+ * @return bool
+ */
+function tool_mfa_pluginfile($course, $cm, $context, $filearea, $args, $forcedownload, array $options = array()) {
+    // Hardcode to only send guidance files from the top level.
+    $fs = get_file_storage();
+    $file = $fs->get_file(
+        $context->id,
+        'tool_mfa',
+        'guidance',
+        0,
+        '/',
+        $args[1]
+    );
+    if (!$file) {
+        send_file_not_found();
+        return false;
+    }
+    send_file($file, $file->get_filename());
+
+    return true;
 }

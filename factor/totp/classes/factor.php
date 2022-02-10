@@ -46,18 +46,26 @@ use tool_mfa\local\factor\object_factor_base;
 use OTPHP\TOTP;
 
 class factor extends object_factor_base {
+
+    const TOTP_OLD = 'old';
+    const TOTP_FUTURE = 'future';
+    const TOTP_USED = 'used';
+    const TOTP_VALID = 'valid';
+    const TOTP_INVALID = 'invalid';
+
     /**
      * Generates TOTP URI for given secret key.
-     * Uses site name, domain and user name to make GA account look like:
-     * "Sitename domain (username)"
+     * Uses site name, hostname and user name to make GA account look like:
+     * "Sitename hostname (username)".
      *
      * @param string $secret
      * @return string
      */
     public function generate_totp_uri($secret) {
         global $USER, $SITE, $CFG;
-        $domain = str_replace('http://', '', str_replace('https://', '', $CFG->wwwroot));
-        $issuer = $SITE->fullname.' '.$domain;
+        $host = parse_url($CFG->wwwroot, PHP_URL_HOST);
+        $sitename = str_replace(':', '', $SITE->fullname);
+        $issuer = $sitename.' '.$host;
         $totp = TOTP::create($secret);
         $totp->setLabel($USER->username);
         $totp->setIssuer($issuer);
@@ -84,8 +92,8 @@ class factor extends object_factor_base {
      * {@inheritDoc}
      */
     public function get_state() {
-
-        $userfactors = $this->get_active_user_factors();
+        global $USER;
+        $userfactors = $this->get_active_user_factors($USER);
 
         // If no codes are setup then we must be neutral not unknown.
         if (count($userfactors) == 0) {
@@ -114,9 +122,9 @@ class factor extends object_factor_base {
      * {@inheritDoc}
      */
     public function setup_factor_form_definition_after_data($mform) {
-        global $OUTPUT;
+        global $OUTPUT, $SITE, $USER;
 
-        $mform->addElement('html', $OUTPUT->heading(get_string('setupfactor', 'factor_totp'), 3));
+        $mform->addElement('html', $OUTPUT->heading(get_string('setupfactor', 'factor_totp'), 2));
 
         $mform->addElement('text', 'devicename', get_string('devicename', 'factor_totp'),
             array('placeholder' => get_string('devicenameexample', 'factor_totp')));
@@ -124,22 +132,43 @@ class factor extends object_factor_base {
         $mform->setType("devicename", PARAM_TEXT);
         $mform->addRule('devicename', get_string('required'), 'required', null, 'client');
 
+        // Scan.
         $secretfield = $mform->getElement('secret');
         $secret = $secretfield->getValue();
         $qrcode = $this->generate_qrcode($secret);
 
+        $html = \html_writer::tag('p', $qrcode);
+        $mform->addElement('static', 'scan', get_string('setupfactor:scan', 'factor_totp'), $html);
+
+        // Link.
+        if (get_config('factor_totp', 'totplink')) {
+            $uri = $this->generate_totp_uri($secret);
+            $html = $OUTPUT->action_link($uri, get_string('setupfactor:linklabel', 'factor_totp'));
+            $mform->addElement('static', 'link', get_string('setupfactor:link', 'factor_totp'), $html);
+            $mform->addHelpButton('link', 'setupfactor:link', 'factor_totp');
+        }
+
+        // Enter manually.
         $secret = wordwrap($secret, 4, ' ', true) . '</code>';
         $secret = \html_writer::tag('code', $secret);
 
-        $html = '';
-        $html .= \html_writer::tag('p', get_string('setupfactor:key', 'factor_totp').$secret);
-        $html .= $qrcode;
+        $manualtable = new \html_table();
+        $manualtable->id = 'manualattributes';
+        $manualtable->attributes['class'] = 'generaltable table table-bordered table-sm w-auto';
+        $manualtable->attributes['style'] = 'width: auto;';
+        $manualtable->data = [
+            [get_string('setupfactor:key', 'factor_totp'), $secret],
+            [get_string('setupfactor:account', 'factor_totp'), "$SITE->fullname ($USER->username)"],
+            [get_string('setupfactor:mode', 'factor_totp'), get_string('setupfactor:mode:timebased', 'factor_totp')]
+        ];
 
-        $mform->addElement('static', 'description', get_string('setupfactor:scan', 'factor_totp'), $html);
+        $html = \html_writer::table($manualtable);
+        $mform->addElement('static', 'enter', get_string('setupfactor:enter', 'factor_totp'), $html);
+        $mform->addHelpButton('enter', 'setupfactor:enter', 'factor_totp');
 
-        $mform->addElement('text', 'verificationcode', get_string('verificationcode', 'factor_totp'));
+        $mform->addElement(new \tool_mfa\local\form\verification_field(null, false));
+        $mform->setType('verificationcode', PARAM_ALPHANUM);
         $mform->addHelpButton('verificationcode', 'verificationcode', 'factor_totp');
-        $mform->setType("verificationcode", PARAM_INT);
         $mform->addRule('verificationcode', get_string('required'), 'required', null, 'client');
 
         return $mform;
@@ -168,9 +197,9 @@ class factor extends object_factor_base {
      */
     public function login_form_definition($mform) {
 
-        $mform->addElement('text', 'verificationcode', get_string('verificationcode', 'factor_totp'),
-            array('autofocus' => 'autofocus', 'pattern' => '[0-9]*'));
-        $mform->setType("verificationcode", PARAM_ALPHANUM);
+        $mform->disable_form_change_checker();
+        $mform->addElement(new \tool_mfa\local\form\verification_field());
+        $mform->setType('verificationcode', PARAM_ALPHANUM);
         $mform->addHelpButton('verificationcode', 'verificationcode', 'factor_totp');
 
         return $mform;
@@ -182,17 +211,73 @@ class factor extends object_factor_base {
      * {@inheritDoc}
      */
     public function login_form_validation($data) {
-        $factors = $this->get_active_user_factors();
+        global $USER;
+        $factors = $this->get_active_user_factors($USER);
         $result = array('verificationcode' => get_string('error:wrongverification', 'factor_totp'));
+        $windowconfig = get_config('factor_totp', 'window');
 
         foreach ($factors as $factor) {
             $totp = TOTP::create($factor->secret);
-            if ($totp->verify($data['verificationcode'], time(), 1)) {
-                $result = array();
-                $this->update_lastverified($factor->id);
+            // Convert seconds to windows.
+            $window = (int) floor($windowconfig / $totp->getPeriod());
+            $factorresult = $this->validate_code($data['verificationcode'], $window, $totp, $factor);
+            $time = userdate(time(), get_string('systimeformat', 'factor_totp'));
+
+            switch ($factorresult) {
+                case self::TOTP_USED:
+                    return array('verificationcode' => get_string('error:codealreadyused', 'factor_totp'));
+
+                case self::TOTP_OLD:
+                    return array('verificationcode' => get_string('error:oldcode', 'factor_totp', $time));
+
+                case self::TOTP_FUTURE:
+                    return array('verificationcode' => get_string('error:futurecode', 'factor_totp', $time));
+
+                case self::TOTP_VALID:
+                    $this->update_lastverified($factor->id);
+                    return array();
+
+                default:
+                    continue(2);
             }
         }
         return $result;
+    }
+
+    /**
+     * Checks the code for reuse, clock skew, and validity.
+     *
+     * @param string $code the code to check.
+     * @param int $window the window to check validity for.
+     * @param TOTP $totp the totp object to check against.
+     * @param stdClass $factor the factor with information required.
+     *
+     * @return const constant with verification state.
+     */
+    public function validate_code($code, $window, $totp, $factor) {
+        // First check if this code matches the last verified timestamp.
+        $lastverified = $this->get_lastverified($factor->id);
+        if ($lastverified > 0 && $totp->verify($code, $lastverified, $window)) {
+            return self::TOTP_USED;
+        }
+
+        // The window in which to check for clock skew, 5 increments past valid window.
+        $skewwindow = $window + 5;
+        $pasttimestamp = time() - ($skewwindow * $totp->getPeriod());
+        $futuretimestamp = time() + ($skewwindow * $totp->getPeriod());
+
+        if ($totp->verify($code, time(), $window)) {
+            return self::TOTP_VALID;
+        } else if ($totp->verify($code, $pasttimestamp, $skewwindow)) {
+            // Check for clock skew in the past 10 periods.
+            return self::TOTP_OLD;
+        } else if ($totp->verify($code, $futuretimestamp, $skewwindow)) {
+            // Check for clock skew in the future 10 periods.
+            return self::TOTP_FUTURE;
+        } else {
+            // In all other cases, code is invalid.
+            return self::TOTP_INVALID;
+        }
     }
 
     /**
@@ -222,7 +307,7 @@ class factor extends object_factor_base {
             $row->timecreated = time();
             $row->createdfromip = $USER->lastip;
             $row->timemodified = time();
-            $row->lastverified = time();
+            $row->lastverified = 0;
             $row->revoked = 0;
 
             $id = $DB->insert_record('tool_mfa', $row);
@@ -240,9 +325,9 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
-        return $DB->get_records('tool_mfa', array('userid' => $USER->id, 'factor' => $this->name));
+    public function get_all_user_factors($user) {
+        global $DB;
+        return $DB->get_records('tool_mfa', array('userid' => $user->id, 'factor' => $this->name));
     }
 
     /**
@@ -260,6 +345,15 @@ class factor extends object_factor_base {
      * {@inheritDoc}
      */
     public function has_setup() {
+        return true;
+    }
+
+    /**
+     * TOTP Factor implementation
+     *
+     * {@inheritDoc}
+     */
+    public function show_setup_buttons() {
         return true;
     }
 

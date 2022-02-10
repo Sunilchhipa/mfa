@@ -25,8 +25,6 @@
 
 namespace factor_iprange;
 
-defined('MOODLE_INTERNAL') || die();
-
 use tool_mfa\local\factor\object_factor_base;
 
 class factor extends object_factor_base {
@@ -37,9 +35,9 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
-        $records = $DB->get_records('tool_mfa', array('userid' => $USER->id, 'factor' => $this->name));
+    public function get_all_user_factors($user) {
+        global $DB;
+        $records = $DB->get_records('tool_mfa', array('userid' => $user->id, 'factor' => $this->name));
 
         if (!empty($records)) {
             return $records;
@@ -47,10 +45,10 @@ class factor extends object_factor_base {
 
         // Null records returned, build new record.
         $record = array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
             'timecreated' => time(),
-            'createdfromip' => $USER->lastip,
+            'createdfromip' => $user->lastip,
             'timemodified' => time(),
             'revoked' => 0,
         );

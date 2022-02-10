@@ -25,8 +25,6 @@
 
 namespace tool_mfa\event;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Event for when user successfully passed all MFA factor checks.
  *
@@ -52,11 +50,19 @@ class user_passed_mfa extends \core\event\base {
      */
     public static function user_passed_mfa_event($user) {
 
+        // Build debug info string.
+        $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
+        $debug = '';
+        foreach ($factors as $factor) {
+            $debug .= "<br> Factor {$factor->name} status: {$factor->get_state()}";
+        }
+
         $data = array(
             'relateduserid' => null,
             'context' => \context_user::instance($user->id),
             'other' => array (
-                'userid' => $user->id
+                'userid' => $user->id,
+                'debug' => $debug
             )
         );
 
@@ -79,7 +85,7 @@ class user_passed_mfa extends \core\event\base {
      * @return string
      */
     public function get_description() {
-        return "The user with id '{$this->other['userid']}' successfully passed all MFA Factors";
+        return "The user with id '{$this->other['userid']}' successfully passed MFA. <br> Information: {$this->other['debug']}";
     }
 
     /**

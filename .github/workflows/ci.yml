@@ -1,0 +1,11 @@
+# .github/workflows/ci.yml
+name: Run all tests
+
+on: [push, pull_request]
+
+jobs:
+  workflow_group_35_plus_ci:
+    uses: catalyst/catalyst-moodle-workflows/.github/workflows/group-35-plus-ci.yml@main
+    with:
+      #Grunt fails due to CSS styling needing an !important.
+      disable_grunt: true
