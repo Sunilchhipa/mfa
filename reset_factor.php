@@ -27,27 +27,62 @@ require_once(__DIR__ . '/../../../config.php');
 require_once($CFG->libdir . '/adminlib.php');
 admin_externalpage_setup('tool_mfa_resetfactor');
 
+$bulk = !empty($SESSION->bulk_users);
+
 $factors = \tool_mfa\plugininfo\factor::get_factors();
-$form = new \tool_mfa\local\form\reset_factor(null, array('factors' => $factors));
+$form = new \tool_mfa\local\form\reset_factor(null, array('factors' => $factors, 'bulk' => $bulk));
 
 if ($form->is_cancelled()) {
-    $settingsurl = new moodle_url('/admin/category.php?category=toolmfafolder');
-    redirect($settingsurl);
+    if ($bulk) {
+        $url = new moodle_url('/admin/user/user_bulk.php');
+    } else {
+        $url = new moodle_url('/admin/category.php', ['category' => 'toolmfafolder']);
+    }
+    redirect($url);
 } else if ($fromform = $form->get_data()) {
-    $user = $fromform->user;
-
     // Get factor from select index.
-    $factor = $factors[$fromform->factor];
-    $factor->delete_factor_for_user($user->id);
-    $stringarr = array('factor' => $factor->get_display_name(), 'username' => $user->username);
-    \core\notification::success(get_string('resetsuccess', 'tool_mfa', $stringarr));
+    if ($fromform->factor !== 'all') {
+        $factor = $factors[$fromform->factor];
+    } else {
+        $factor = 'all';
+    }
 
-    // Emit event for deletion.
-    $event = \tool_mfa\event\user_deleted_factor::user_deleted_factor_event($user, $USER, $factor->name);
-    $event->trigger();
+    // Setup var to put into notification strings.
+    $stringvar = $factor === 'all' ? get_string('all') : $factor->get_display_name();
 
-    // Reload page.
-    redirect($PAGE->url);
+    // Setup user array for bulk action.
+    $users = $bulk ? $SESSION->bulk_users : [$fromform->user];
+
+    foreach ($users as $user) {
+        if (!$user instanceof stdClass) {
+            $user = \core_user::get_user($user);
+        }
+
+        // Add a user preference, to display a notification to the user that their factor was reset.
+        // This should only be done if the factor is active for the user, and has input.
+        $factors = $factor === 'all' ? \tool_mfa\plugininfo\factor::get_factors() : [$factor];
+        foreach ($factors as $factor) {
+            $factor->delete_factor_for_user($user);
+            if (count($factor->get_active_user_factors($user)) > 0 && $factor->has_setup()) {
+                $prefname = 'tool_mfa_reset_' . $factor->name;
+                set_user_preference($prefname, true, $user);
+            }
+        }
+
+        // If we are just doing 1 user.
+        if (!$bulk) {
+            $stringarr = array('factor' => $stringvar, 'username' => $user->username);
+            \core\notification::success(get_string('resetsuccess', 'tool_mfa', $stringarr));
+
+            // Reload page.
+            redirect($PAGE->url);
+        }
+    }
+
+    \core\notification::success(get_string('resetsuccessbulk', 'tool_mfa', $stringvar));
+    unset($SESSION->bulk_users);
+    // Redirect to bulk actions page.
+    redirect(new moodle_url('/admin/user/user_bulk.php'));
 }
 
 echo $OUTPUT->header();

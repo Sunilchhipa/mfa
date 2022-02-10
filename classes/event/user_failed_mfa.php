@@ -25,8 +25,6 @@
 
 namespace tool_mfa\event;
 
-defined('MOODLE_INTERNAL') || die();
-
 /**
  * Event for when user successfully passed all MFA factor checks.
  *
@@ -54,11 +52,13 @@ class user_failed_mfa extends \core\event\base {
         // Build debug info string.
         $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
         $debug = '';
-        $failurereason = get_string('event:faillockout', 'tool_mfa');
+        $failurereason = get_string('event:failnotenoughfactors', 'tool_mfa');
         foreach ($factors as $factor) {
             $debug .= "<br> Factor {$factor->name} status: {$factor->get_state()}";
             if ($factor->get_state() === \tool_mfa\plugininfo\factor::STATE_FAIL) {
                 $failurereason = get_string('event:failfactor', 'tool_mfa');
+            } else if ($factor->get_state() === \tool_mfa\plugininfo\factor::STATE_LOCKED) {
+                $failurereason = get_string('event:faillockout', 'tool_mfa');
             }
         }
 
@@ -91,7 +91,8 @@ class user_failed_mfa extends \core\event\base {
      * @return string
      */
     public function get_description() {
-        return "The user with id '{$this->other['userid']}' failed authenticating with MFA. <br> Information: {$this->other['failurereason']}{$this->other['debug']}";
+        return "The user with id '{$this->other['userid']}' failed authenticating with MFA.
+            <br> Information: {$this->other['failurereason']}{$this->other['debug']}";
     }
 
     /**

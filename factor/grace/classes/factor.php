@@ -25,8 +25,6 @@
 
 namespace factor_grace;
 
-defined('MOODLE_INTERNAL') || die();
-
 use tool_mfa\local\factor\object_factor_base;
 
 class factor extends object_factor_base {
@@ -37,10 +35,10 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
+    public function get_all_user_factors($user) {
+        global $DB;
 
-        $records = $DB->get_records('tool_mfa', array('userid' => $USER->id, 'factor' => $this->name));
+        $records = $DB->get_records('tool_mfa', array('userid' => $user->id, 'factor' => $this->name));
 
         if (!empty($records)) {
             return $records;
@@ -48,9 +46,9 @@ class factor extends object_factor_base {
 
         // Null records returned, build new record.
         $record = array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
-            'createdfromip' => $USER->lastip,
+            'createdfromip' => $user->lastip,
             'timecreated' => time(),
             'revoked' => 0,
         );
@@ -64,8 +62,8 @@ class factor extends object_factor_base {
      *
      * @return array the array of active factors.
      */
-    public function get_active_user_factors() {
-        return $this->get_all_user_factors();
+    public function get_active_user_factors($user) {
+        return $this->get_all_user_factors($user);
     }
 
     /**
@@ -82,16 +80,22 @@ class factor extends object_factor_base {
      * Grace Factor implementation.
      * Checks the user login time against their first login after MFA activation.
      *
-     * {@inheritDoc}
+     * @param bool $redirectable should this state call be allowed to redirect the user?
+     * @return string state constant
      */
-    public function get_state() {
-        $records = ($this->get_all_user_factors());
+    public function get_state($redirectable = true) {
+        global $FULLME, $SESSION, $USER;
+        $records = ($this->get_all_user_factors($USER));
         $record = reset($records);
 
         // First check if user has any other input or setup factors active.
-        $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
+        $factors = $this->get_affecting_factors();
+        $total = 0;
         foreach ($factors as $factor) {
-            if ($factor->has_input() || $factor->has_setup()) {
+            $total += $factor->get_weight();
+            // If we have hit 100 total, then we know it is possible to auth with the current setup.
+            // Gracemode should no longer give points.
+            if ($total >= 100) {
                 return \tool_mfa\plugininfo\factor::STATE_NEUTRAL;
             }
         }
@@ -104,9 +108,41 @@ class factor extends object_factor_base {
             $duration = get_config('factor_grace', 'graceperiod');
 
             if (!empty($duration)) {
-                return (time() <= $starttime + $duration)
-                ? \tool_mfa\plugininfo\factor::STATE_PASS
-                : \tool_mfa\plugininfo\factor::STATE_NEUTRAL;
+                if (time() > $starttime + $duration) {
+                    // If gracemode would have given points, but now doesnt,
+                    // Jump out of the loop and force a factor setup.
+                    // We will return once there is a setup, or the user tries to leave.
+                    if (get_config('factor_grace', 'forcesetup') && $redirectable) {
+                        if (empty($SESSION->mfa_gracemode_recursive)) {
+                            // Set a gracemode lock so any further recursive gets fall past any recursive calls.
+                            $SESSION->mfa_gracemode_recursive = true;
+
+                            $factorurls = \tool_mfa\manager::get_no_redirect_urls();
+                            $cleanurl = new \moodle_url($FULLME);
+
+                            foreach ($factorurls as $factorurl) {
+                                if ($factorurl->compare($cleanurl)) {
+                                    $redirectable = false;
+                                }
+                            }
+
+                            // We should never redirect if we have already passed.
+                            if ($redirectable && \tool_mfa\manager::get_cumulative_weight() >= 100) {
+                                $redirectable = false;
+                            }
+
+                            unset($SESSION->mfa_gracemode_recursive);
+
+                            if ($redirectable) {
+                                redirect(new \moodle_url('/admin/tool/mfa/user_preferences.php'),
+                                    get_string('redirectsetup', 'factor_grace'));
+                            }
+                        }
+                    }
+                    return \tool_mfa\plugininfo\factor::STATE_NEUTRAL;
+                } else {
+                    return \tool_mfa\plugininfo\factor::STATE_PASS;
+                }
             } else {
                 return \tool_mfa\plugininfo\factor::STATE_UNKNOWN;
             }
@@ -130,14 +166,16 @@ class factor extends object_factor_base {
      * {@inheritDoc}
      */
     public function post_pass_state() {
+        global $USER;
         parent::post_pass_state();
 
         // Ensure grace factor passed before displaying notification.
-        if ($this->get_state() == \tool_mfa\plugininfo\factor::STATE_PASS) {
+        if ($this->get_state() == \tool_mfa\plugininfo\factor::STATE_PASS
+            && !\tool_mfa\manager::check_factor_pending($this->name)) {
             $url = new \moodle_url('/admin/tool/mfa/user_preferences.php');
             $link = \html_writer::link($url, get_string('preferences', 'factor_grace'));
 
-            $records = ($this->get_all_user_factors());
+            $records = ($this->get_all_user_factors($USER));
             $record = reset($records);
             $starttime = $record->timecreated;
             $timeremaining = ($starttime + get_config('factor_grace', 'graceperiod')) - time();
@@ -145,7 +183,7 @@ class factor extends object_factor_base {
 
             $data = array('url' => $link, 'time' => $time);
             $message = get_string('setupfactors', 'factor_grace', $data);
-            \core\notification::info($message);
+            \core\notification::error($message);
         }
     }
 
@@ -163,5 +201,78 @@ class factor extends object_factor_base {
             }
         }
         return true;
+    }
+
+    /**
+     * Grace Factor implementation.
+     * Gracemode can change outcome just by waiting, or based on other factors.
+     */
+    public function possible_states($user) {
+        return array(
+            \tool_mfa\plugininfo\factor::STATE_PASS,
+            \tool_mfa\plugininfo\factor::STATE_NEUTRAL
+        );
+    }
+
+    /**
+     * Grace factor implementation.
+     *
+     * If grace period should redirect at end, make this a no-redirect url.
+     *
+     * @return array
+     */
+    public function get_no_redirect_urls() {
+        $redirect = get_config('factor_grace', 'forcesetup');
+
+        if ($redirect && $this->get_state(false) === \tool_mfa\plugininfo\factor::STATE_NEUTRAL) {
+            // If the config is enabled, the user should be able to access + setup a factor using these pages.
+            return [
+                new \moodle_url('/admin/tool/mfa/user_preferences.php'),
+                new \moodle_url('/admin/tool/mfa/action.php')
+            ];
+        } else {
+            return [];
+        }
+    }
+
+    /**
+     * Returns a list of factor objects that can affect gracemode giving points.
+     *
+     * Only factors that a user can setup or manually use can affect whether gracemode gives points.
+     * The intest is to provide a grace period for users to go in, setup factors, phone numbers, etc.,
+     * so that they are able to authenticate correctly once the grace period ends.
+     *
+     * @return array
+     */
+    public function get_all_affecting_factors(): array {
+        // Check if user has any other input or setup factors active.
+        $factors = \tool_mfa\plugininfo\factor::get_factors();
+        $factors = array_filter($factors, function($el) {
+            return $el->has_input() || $el->has_setup();
+        });
+        return $factors;
+    }
+
+    /**
+     * Get the factor list that is currently affecting gracemode. Active and not ignored.
+     *
+     * @return array
+     */
+    public function get_affecting_factors(): array {
+        // We need to filter all active user factors against the affecting factors and ignorelist.
+        // Map active to names for filtering.
+        $active = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
+        $active = array_map(function($el) {
+            return $el->name;
+        }, $active);
+        $factors = $this->get_all_affecting_factors();
+
+        $ignorelist = get_config('factor_grace', 'ignorelist');
+        $ignorelist = !empty($ignorelist) ? explode(',', $ignorelist) : [];
+
+        $factors = array_filter($factors, function($el) use ($ignorelist, $active) {
+            return !in_array($el->name, $ignorelist) && in_array($el->name, $active);
+        });
+        return $factors;
     }
 }

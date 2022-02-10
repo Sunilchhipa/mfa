@@ -25,8 +25,6 @@
 
 namespace tool_mfa\local\factor;
 
-defined('MOODLE_INTERNAL') || die();
-
 interface object_factor {
     /**
      * Returns true if factor is enabled, otherwise false.
@@ -126,17 +124,19 @@ interface object_factor {
     /**
      * Returns an array of all user factors of given type (both active and revoked).
      *
+     * @param stdClass user the user to check against.
      * @return array
      */
-    public function get_all_user_factors();
+    public function get_all_user_factors($user);
 
     /**
      * Returns an array of active user factor records.
      * Filters get_all_user_factors() output.
      *
+     * @param stdClass user the user to check against.
      * @return array
      */
-    public function get_active_user_factors();
+    public function get_active_user_factors($user);
 
     /**
      * Returns true if factor class has factor records that might be revoked.
@@ -175,6 +175,13 @@ interface object_factor {
      * @return bool
      */
     public function has_setup();
+
+    /**
+     * If has_setup returns true, decides if the setup buttons should be shown on the preferences page.
+     *
+     * @return bool
+     */
+    public function show_setup_buttons();
 
     /**
      * Returns true if factor requires user input for success or failure during login.
@@ -244,7 +251,7 @@ interface object_factor {
      */
     public function check_combination($combination);
 
-    /*
+    /**
      * Gets the string for setup button on preferences page.
      *
      * @return string the string to display on the button.
@@ -254,7 +261,46 @@ interface object_factor {
     /**
      * Deletes all instances of a factor for user.
      *
-     * @param userid the id of the user to delete for.
+     * @param stdClass $user the user to delete for.
      */
-    public function delete_factor_for_user($userid);
+    public function delete_factor_for_user($user);
+
+    /**
+     * Process a cancel action from a user.
+     *
+     * @return void
+     */
+    public function process_cancel_action();
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param $mform Form to inject global elements into.
+     * @return void
+     */
+    public function global_definition($mform);
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param $mform Form to inject global elements into.
+     * @return void
+     */
+    public function global_definition_after_data($mform);
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param array $data Data from the form.
+     * @param array $files Files form the form.
+     * @return array of errors from validation.
+     */
+    public function global_validation($data, $files): array;
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param object $data Data from the form.
+     */
+    public function global_submit($data);
 }

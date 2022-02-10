@@ -37,55 +37,70 @@ $PAGE->set_pagelayout('secure');
 $pagetitle = $SITE->shortname.': '.get_string('mfa', 'tool_mfa');
 $PAGE->set_title($pagetitle);
 
-$OUTPUT = $PAGE->get_renderer('tool_mfa');
+// The only page action allowed here is a logout if it was requested.
+$logout = optional_param('logout', false, PARAM_BOOL);
+if ($logout) {
+    if (!empty($SESSION->wantsurl)) {
+        // If we have the wantsurl, we should redirect there, to keep it intact.
+        $wantsurl = $SESSION->wantsurl;
+    } else {
+        // Else redirect home.
+        $wantsurl = new \moodle_url($CFG->wwwroot);
+    }
+
+    \tool_mfa\manager::mfa_logout();
+    redirect($wantsurl);
+}
 
 $currenturl = new moodle_url('/admin/tool/mfa/auth.php');
 
 // Perform state check.
-\tool_mfa\manager::check_status();
+\tool_mfa\manager::resolve_mfa_status();
 
 $factor = \tool_mfa\plugininfo\factor::get_next_user_factor();
 // If ok, perform form actions for input factor.
 $form = new login_form($currenturl, array('factor' => $factor));
 if ($form->is_submitted()) {
     if (!$form->is_validated() && !$form->is_cancelled()) {
-        // End user session if too many failed attempts.
-        empty($SESSION->mfa_fail_counter)
-            ? $SESSION->mfa_fail_counter = 1
-            : $SESSION->mfa_fail_counter++;
-
-        if ($SESSION->mfa_fail_counter >= get_config('tool_mfa', 'lockout')) {
-            \tool_mfa\manager::cannot_login();
-        }
-    }
-
-    // Set state from user actions.
-    if ($form->is_cancelled()) {
-        $factor->set_state(\tool_mfa\plugininfo\factor::STATE_NEUTRAL);
-        // Move to next factor.
-        \tool_mfa\manager::check_status(true);
+        // Increment the fail counter for the factor,
+        // And let the factor handle locking logic.
+        $factor->increment_lock_counter();
+        \tool_mfa\manager::resolve_mfa_status(false);
     } else {
-        if ($data = $form->get_data()) {
-            // Did user submit something that causes a fail state?
-            if ($factor->get_state() == \tool_mfa\plugininfo\factor::STATE_FAIL) {
-                \tool_mfa\manager::check_status(true);
-            }
-
-            $factor->set_state(\tool_mfa\plugininfo\factor::STATE_PASS);
+        // Set state from user actions.
+        if ($form->is_cancelled()) {
+            $factor->process_cancel_action();
             // Move to next factor.
-            \tool_mfa\manager::check_status(true);
+            \tool_mfa\manager::resolve_mfa_status(true);
+        } else {
+            if ($data = $form->get_data()) {
+                // Validation has passed, so before processing, lets action the global form submissions as well.
+                $form->globalmanager->submit($data);
+
+                // Did user submit something that causes a fail state?
+                if ($factor->get_state() == \tool_mfa\plugininfo\factor::STATE_FAIL) {
+                    \tool_mfa\manager::resolve_mfa_status(true);
+                }
+
+                $factor->set_state(\tool_mfa\plugininfo\factor::STATE_PASS);
+                // Move to next factor.
+                \tool_mfa\manager::resolve_mfa_status(true);
+            }
         }
     }
 }
-
+$renderer = $PAGE->get_renderer('tool_mfa');
 echo $OUTPUT->header();
 
 \tool_mfa\manager::display_debug_notification();
 
 echo $OUTPUT->heading(get_string('pluginname', 'factor_'.$factor->name));
-if (!empty($SESSION->mfa_fail_counter)) {
-    $remaining = get_config('tool_mfa', 'lockout') - $SESSION->mfa_fail_counter;
-    echo $OUTPUT->notification(get_string('lockoutnotification', 'tool_mfa', $remaining), 'notifyerror');
+// Check if a notification is required for factor lockouts.
+$remattempts = $factor->get_remaining_attempts();
+if ($remattempts < get_config('tool_mfa', 'lockout')) {
+    echo $OUTPUT->notification(get_string('lockoutnotification', 'tool_mfa', $remattempts), 'notifyerror');
 }
 $form->display();
+
+echo $renderer->guide_link();
 echo $OUTPUT->footer();
