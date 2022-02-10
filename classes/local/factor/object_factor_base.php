@@ -270,6 +270,19 @@ abstract class object_factor_base implements object_factor {
     }
 
     /**
+     * Gets lastverified timestamp.
+     *
+     * @param int $factorid
+     * @return int|bool the lastverified timestamp, or false if not found.
+     */
+    public function get_lastverified($factorid) {
+        global $DB;
+
+        $record = $DB->get_record('tool_mfa', array('id' => $factorid));
+        return $record->lastverified;
+    }
+
+    /**
      * Returns true if factor needs to be setup by user and has setup_form.
      *
      * Override in child class if necessary.
@@ -403,5 +416,15 @@ abstract class object_factor_base implements object_factor {
      */
     public function get_setup_string() {
         return get_string('setupfactor', 'tool_mfa');
+    }
+
+    /**
+     * Deletes all instances of factor for a user.
+     *
+     * @param int $userid the id to delete for.
+     */
+    public function delete_factor_for_user($userid) {
+        global $DB;
+        $DB->delete_records('tool_mfa', array('userid' => $userid, 'factor' => $this->name));
     }
 }
