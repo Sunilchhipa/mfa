@@ -43,6 +43,7 @@ class login_form extends \moodleform {
         $buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
         $mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
         $mform->closeHeaderBefore('buttonar');
+        //$this->globalmanager->definition($mform);
     }
 
     /**
@@ -54,6 +55,14 @@ class login_form extends \moodleform {
         $factor = $this->_customdata['factor'];
 
         $mform2 = $factor->login_form_definition_after_data($mform);
+        //$factor->login_form_definition_after_data($mform);
+        //$this->globalmanager->definition_after_data($mform);
+
+        //$buttonarray = array();
+        //$buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
+        //$buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
+        //$mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
+        //$mform->closeHeaderBefore('buttonar');
     }
 
     /**

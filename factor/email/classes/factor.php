@@ -26,6 +26,8 @@
 
 namespace factor_email;
 
+use tool_mfa\local\factor\object_factor_base;
+
 defined('MOODLE_INTERNAL') || die();
 
 define('EMAIL_ONLY', 0);
@@ -34,7 +36,6 @@ define('EMAIL_AND_SMS_BOTH', 2);
 
 require_once($CFG->dirroot . '/admin/tool/mfa/factor/email/libraries/twilio-php-main/src/Twilio/autoload.php');
 
-use tool_mfa\local\factor\object_factor_base;
 use Twilio\Rest\Client;
 use stdClass;
 
