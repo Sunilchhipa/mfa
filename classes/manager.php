@@ -25,7 +25,7 @@
 
 namespace tool_mfa;
 
-defined('MOODLE_INTERNAL') || die();
+use Exception;
 
 class manager {
 
@@ -171,11 +171,30 @@ class manager {
      * @return void
      */
     public static function cannot_login() {
-        global $OUTPUT;
-        echo $OUTPUT->header();
-        echo $OUTPUT->not_enough_factors();
-        echo $OUTPUT->footer();
-        self::mfa_logout();
+        global $ME, $PAGE, $SESSION, $USER;
+
+        // Determine page URL without triggering warnings from $PAGE.
+        if (!preg_match("~(\/admin\/tool\/mfa\/auth.php)~", $ME)) {
+            // If URL isn't set, we need to redir to auth.php.
+            // This ensures URL and required info is correctly set.
+            // Then we arrive back here.
+            redirect(new \moodle_url('/admin/tool/mfa/auth.php'));
+        }
+
+        $renderer = $PAGE->get_renderer('tool_mfa');
+
+        echo $renderer->header();
+        if (get_config('tool_mfa', 'debugmode')) {
+            self::display_debug_notification();
+        }
+        echo $renderer->not_enough_factors();
+        echo $renderer->footer();
+        // Emit an event for failure, then logout.
+        $event = \tool_mfa\event\user_failed_mfa::user_failed_mfa_event($USER);
+        $event->trigger();
+
+        // We should set the redir flag, as this page is generated through auth.php.
+        $SESSION->tool_mfa_has_been_redirected = true;
         die;
     }
 
@@ -204,24 +223,36 @@ class manager {
         // Check for any instant fail states.
         $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
         foreach ($factors as $factor) {
+
+            $factor->load_locked_state();
+
             if ($factor->get_state() == \tool_mfa\plugininfo\factor::STATE_FAIL) {
                 return \tool_mfa\plugininfo\factor::STATE_FAIL;
             }
         }
 
-        // Check for passing state. If found, ensure that session var is set.
-        if (isset($SESSION->tool_mfa_authenticated) && $SESSION->tool_mfa_authenticated) {
-            return \tool_mfa\plugininfo\factor::STATE_PASS;
-        } else if (self::passed_enough_factors()) {
-            return \tool_mfa\plugininfo\factor::STATE_PASS;
-        }
+        $passcondition = ((isset($SESSION->tool_mfa_authenticated) && $SESSION->tool_mfa_authenticated) ||
+            self::passed_enough_factors());
 
         // Check next factor for instant fail (fallback).
         if (\tool_mfa\plugininfo\factor::get_next_user_factor()->get_state() ==
             \tool_mfa\plugininfo\factor::STATE_FAIL) {
 
+            // We need to handle a special case here, where someone reached the fallback,
+            // If they were able to modify their state on the error page, such as passing iprange,
+            // We must return pass.
+            if ($passcondition) {
+                return \tool_mfa\plugininfo\factor::STATE_PASS;
+            }
+
             return \tool_mfa\plugininfo\factor::STATE_FAIL;
         }
+
+        // Now check for general passing state. If found, ensure that session var is set.
+        if ($passcondition) {
+            return \tool_mfa\plugininfo\factor::STATE_PASS;
+        }
+
         // Else return neutral state.
         return \tool_mfa\plugininfo\factor::STATE_NEUTRAL;
     }
@@ -233,24 +264,32 @@ class manager {
      * @param bool $shouldreload whether the function should reload (used for auth.php).
      * @return void
      */
-    public static function check_status($shouldreload = false) {
+    public static function resolve_mfa_status($shouldreload = false) {
         global $SESSION;
-
-        if (empty($SESSION->wantsurl)) {
-            $wantsurl = '/';
-        } else {
-            $wantsurl = $SESSION->wantsurl;
-        }
 
         $state = self::get_status();
         if ($state == \tool_mfa\plugininfo\factor::STATE_PASS) {
             self::set_pass_state();
-            unset($SESSION->wantsurl);
-            redirect(new \moodle_url($wantsurl));
+            // Check if user even had to reach auth page.
+            if (isset($SESSION->tool_mfa_has_been_redirected)) {
+                if (empty($SESSION->wantsurl)) {
+                    $wantsurl = '/';
+                } else {
+                    $wantsurl = $SESSION->wantsurl;
+                }
+                unset($SESSION->wantsurl);
+                redirect(new \moodle_url($wantsurl));
+            } else {
+                // Don't touch anything, let user be on their way.
+                return;
+            }
         } else if ($state == \tool_mfa\plugininfo\factor::STATE_FAIL) {
             self::cannot_login();
         } else if ($shouldreload) {
-            redirect(new \moodle_url('/admin/tool/mfa/auth.php'));
+            // Set a session variable to track whether user is where they want to be.
+            $SESSION->tool_mfa_has_been_redirected = true;
+            $authurl = new \moodle_url('/admin/tool/mfa/auth.php');
+            redirect($authurl);
         }
     }
 
@@ -283,11 +322,14 @@ class manager {
      * @return void
      */
     public static function set_pass_state() {
-        global $SESSION, $USER;
+        global $DB, $SESSION, $USER;
         if (!isset($SESSION->tool_mfa_authenticated)) {
             $SESSION->tool_mfa_authenticated = true;
             $event = \tool_mfa\event\user_passed_mfa::user_passed_mfa_event($USER);
             $event->trigger();
+
+            // Add/update record in DB for users last mfa auth.
+            self::update_pass_time();
 
             // Unset session vars during mfa auth.
             unset($SESSION->mfa_redir_referer);
@@ -296,11 +338,67 @@ class manager {
             // Unset user preferences during mfa auth.
             unset_user_preference('mfa_sleep_duration', $USER);
 
+            try {
+                // Clear locked user factors, they may now reauth with anything.
+                @$DB->set_field('tool_mfa', 'lockcounter', 0, ['userid' => $USER->id]);
+            // @codingStandardsIgnoreStart
+            } catch (Exception $e) {
+                // This occurs when upgrade.php hasn't been run. Nothing to do here.
+                // Coding standards ignored, they break on empty catches.
+            }
+            // @codingStandardsIgnoreEnd
+
             // Fire post pass state factor actions.
             $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
             foreach ($factors as $factor) {
                 $factor->post_pass_state();
+                // Also set the states for this session to neutral if they were locked.
+                if ($factor->get_state() == \tool_mfa\plugininfo\factor::STATE_LOCKED) {
+                    $factor->set_state(\tool_mfa\plugininfo\factor::STATE_NEUTRAL);
+                }
             }
+
+            // Output notifications if any factors were reset for this user.
+            $enabledfactors = \tool_mfa\plugininfo\factor::get_enabled_factors();
+            foreach ($enabledfactors as $factor) {
+                $pref = 'tool_mfa_reset_' . $factor->name;
+                $factorpref = get_user_preferences($pref, false);
+                if ($factorpref) {
+                    $url = new \moodle_url('/admin/tool/mfa/user_preferences.php');
+                    $link = \html_writer::link($url, get_string('preferenceslink', 'tool_mfa'));
+                    $data = ['factor' => $factor->get_display_name(), 'url' => $link];
+                    \core\notification::warning(get_string('factorreset', 'tool_mfa', $data));
+                    unset_user_preference($pref);
+                }
+            }
+
+            // Also check for a global reset.
+            // TODO: Delete this in a ferw months, the reset all preference is no longer set.
+            $allfactor = get_user_preferences('tool_mfa_reset_all', false);
+            if ($allfactor) {
+                $url = new \moodle_url('/admin/tool/mfa/user_preferences.php');
+                $link = \html_writer::link($url, get_string('preferenceslink', 'tool_mfa'));
+                \core\notification::warning(get_string('factorresetall', 'tool_mfa', $link));
+                unset_user_preference('tool_mfa_reset_all');
+            }
+        }
+    }
+
+    /**
+     * Inserts or updates user's last MFA pass time in DB.
+     * This should only be called from set_pass_state.
+     *
+     * @return void
+     */
+    private static function update_pass_time() {
+        global $DB, $USER;
+
+        $exists = $DB->record_exists('tool_mfa_auth', ['userid' => $USER->id]);
+
+        if ($exists) {
+            $DB->set_field('tool_mfa_auth', 'lastverified', time(), ['userid' => $USER->id]);
+        } else {
+            $DB->insert_record('tool_mfa_auth', ['userid' => $USER->id, 'lastverified' => time()]);
         }
     }
 
@@ -314,14 +412,30 @@ class manager {
         // Remove all params before comparison.
         $url->remove_all_params();
 
-        // Dont redirect if already on auth.php
+        // Dont redirect if already on auth.php.
         $authurl = new \moodle_url('/admin/tool/mfa/auth.php');
-        if ($url->compare($authurl)) {
+        if ($url->compare($authurl, URL_MATCH_BASE)) {
             return self::NO_REDIRECT;
         }
 
-        // Soft maintenance mode.
-        if (!empty($CFG->maintenance_enabled)) {
+        // Checks for upgrades pending.
+        if (is_siteadmin()) {
+            // We should only allow an upgrade from the frontend to complete.
+            // After that is completed, only the settings shouldn't redirect.
+            // Everything else should be safe to enforce MFA.
+            if (moodle_needs_upgrading()) {
+                return self::NO_REDIRECT;
+            }
+            // An upgrade isn't complete if there are settings that must be saved.
+            $upgradesettings = new \moodle_url('/admin/upgradesettings.php');
+            if ($url->compare($upgradesettings, URL_MATCH_BASE)) {
+                return self::NO_REDIRECT;
+            }
+        }
+
+        // Dont redirect logo images from pluginfile.php (for example: logo in header).
+        $authurl = new \moodle_url('/pluginfile.php/1/core_admin/logocompact/');
+        if ($url->compare($authurl)) {
             return self::NO_REDIRECT;
         }
 
@@ -348,7 +462,7 @@ class manager {
 
         // Enrolment.
         $enrol = new \moodle_url('/enrol/index.php');
-        if ($enrol->compare($url)) {
+        if ($enrol->compare($url, URL_MATCH_BASE)) {
             return self::NO_REDIRECT;
         }
 
@@ -369,24 +483,27 @@ class manager {
 
         // Site policy.
         if (isset($USER->policyagreed) && !$USER->policyagreed) {
-            $manager = new \core_privacy\local\sitepolicy\manager();
-            $policyurl = $manager->get_redirect_url(false);
-            if (!empty($policyurl) && $url->compare($policyurl)) {
-                return self::NO_REDIRECT;
+            // Privacy classes may not exist in older Moodles/Totara.
+            if (class_exists('\core_privacy\local\sitepolicy\manager')) {
+                $manager = new \core_privacy\local\sitepolicy\manager();
+                $policyurl = $manager->get_redirect_url(false);
+                if (!empty($policyurl) && $url->compare($policyurl, URL_MATCH_BASE)) {
+                    return self::NO_REDIRECT;
+                }
             }
         }
 
         // WS/AJAX check.
         if (WS_SERVER || AJAX_SCRIPT) {
             if (isset($SESSION->mfa_pending) && !empty($SESSION->mfa_pending)) {
-                // Allow AJAX and WS, but never from auth.php
+                // Allow AJAX and WS, but never from auth.php.
                 return self::NO_REDIRECT;
             }
             return self::REDIRECT_EXCEPTION;
         }
 
         // Check factor defined safe urls.
-        $factorurls = self::get_factor_no_redirect_urls();
+        $factorurls = self::get_no_redirect_urls();
         foreach ($factorurls as $factorurl) {
             if ($factorurl->compare($url)) {
                 return self::NO_REDIRECT;
@@ -422,12 +539,23 @@ class manager {
      *
      * @return array
      */
-    public static function get_factor_no_redirect_urls() {
+    public static function get_no_redirect_urls() {
         $factors = \tool_mfa\plugininfo\factor::get_factors();
-        $urls = array();
+        $urls = [
+            new \moodle_url('/login/logout.php'),
+            new \moodle_url('/admin/tool/mfa/guide.php')
+        ];
         foreach ($factors as $factor) {
             $urls = array_merge($urls, $factor->get_no_redirect_urls());
         }
+
+        // Allow forced redirection exclusions.
+        if ($exclusions = get_config('tool_mfa', 'redir_exclusions')) {
+            foreach (explode("\n", $exclusions) as $exclusion) {
+                $urls[] = new \moodle_url($exclusion);
+            }
+        }
+
         return $urls;
     }
 
@@ -437,17 +565,17 @@ class manager {
     public static function sleep_timer() {
         global $USER;
 
-        $currentduration = get_user_preferences('mfa_sleep_duration', null, $USER);
-        if (!empty($currentduration)) {
+        $duration = get_user_preferences('mfa_sleep_duration', null, $USER);
+        if (!empty($duration)) {
             // Double current time.
-            set_user_preference('mfa_sleep_duration', $currentduration * 2, $USER);
+            $duration *= 2;
+            $duration = min(2, $duration);
         } else {
             // No duration set.
-            $currentduration = 0.05;
-            set_user_preference('mfa_sleep_duration', $currentduration, $USER);
+            $duration = 0.05;
         }
-
-        sleep($currentduration);
+        set_user_preference('mfa_sleep_duration', $duration, $USER);
+        sleep($duration);
     }
 
     /*
@@ -477,7 +605,7 @@ class manager {
 
             $redir = self::should_require_mfa($cleanurl, $preventredirect);
 
-            if ($redir == self::NO_REDIRECT && !$cleanurl->compare($authurl)) {
+            if ($redir == self::NO_REDIRECT && !$cleanurl->compare($authurl, URL_MATCH_BASE)) {
                 // A non-MFA page that should take precedence.
                 // This check is for any pages, such as site policy, that must occur before MFA.
                 // This check allows AJAX and WS requests to fire on these pages without throwing an exception.
@@ -495,10 +623,14 @@ class manager {
                 // Remove pending status.
                 // We must now auth with MFA, now that pending statuses are resolved.
                 unset($SESSION->mfa_pending);
-                redirect($authurl);
+
+                // Call resolve_status to instantly pass if no redirect is required.
+                self::resolve_mfa_status(true);
+
             } else if ($redir == self::REDIRECT_EXCEPTION) {
                 if (!empty($SESSION->mfa_redir_referer)) {
-                    throw new \moodle_exception('redirecterrordetected', 'tool_mfa', $SESSION->mfa_redir_referer);
+                    throw new \moodle_exception('redirecterrordetected', 'tool_mfa',
+                        $SESSION->mfa_redir_referer, $SESSION->mfa_redir_referer);
                 } else {
                     throw new \moodle_exception('redirecterrordetected', 'error');
                 }
@@ -614,8 +746,10 @@ class manager {
         self::set_factor_config(array('factor_order' => implode(',', $order)), 'tool_mfa');
     }
 
-    /*
-     * If it is possible for a user to setup a factor that could put them into a pass state, returns true.
+    /**
+     * Checks if a factor that can make a user pass can be setup.
+     * It checks if a user will always pass regardless,
+     * then checks if there are factors that can be setup to let a user pass.
      *
      * @return bool
      */
@@ -625,7 +759,19 @@ class manager {
         // Get all active factors.
         $factors = \tool_mfa\plugininfo\factor::get_enabled_factors();
 
-        // If a factor has setup, and can pass, return true.
+        // Check if there are enough factors that a user can ONLY pass, if so, don't display the menu.
+        $weight = 0;
+        foreach ($factors as $factor) {
+            $states = $factor->possible_states($USER);
+            if (count($states) == 1 && reset($states) == \tool_mfa\plugininfo\factor::STATE_PASS) {
+                $weight += $factor->get_weight();
+                if ($weight >= 100) {
+                    return false;
+                }
+            }
+        }
+
+        // Now if there is a factor that can be setup, that may return a pass state for the user, display menu.
         foreach ($factors as $factor) {
             if ($factor->has_setup()) {
                 if (in_array(\tool_mfa\plugininfo\factor::STATE_PASS, $factor->possible_states($USER))) {
@@ -655,5 +801,37 @@ class manager {
             }
         }
         return $totalweight;
+    }
+
+    /**
+     * Checks whether the factor was actually used in the login process.
+     *
+     * @param string factorname the name of the factor.
+     * @return bool true if factor is pending.
+     */
+    public static function check_factor_pending($factorname) {
+        $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
+        // Setup vars.
+        $pending = array();
+        $totalweight = 0;
+        $weighttoggle = false;
+
+        foreach ($factors as $factor) {
+            // If toggle is reached, put in pending and continue.
+            if ($weighttoggle) {
+                $pending[] = $factor->name;
+                continue;
+            }
+
+            if ($factor->get_state() == \tool_mfa\plugininfo\factor::STATE_PASS) {
+                $totalweight += $factor->get_weight();
+                if ($totalweight >= 100) {
+                    $weighttoggle = true;
+                }
+            }
+        }
+
+        // Check whether factor falls into pending category.
+        return in_array($factorname, $pending);
     }
 }

@@ -25,8 +25,6 @@
 
 namespace factor_auth;
 
-defined('MOODLE_INTERNAL') || die();
-
 use tool_mfa\local\factor\object_factor_base;
 
 class factor extends object_factor_base {
@@ -37,9 +35,9 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
-        $records = $DB->get_records('tool_mfa', array('userid' => $USER->id, 'factor' => $this->name));
+    public function get_all_user_factors($user) {
+        global $DB;
+        $records = $DB->get_records('tool_mfa', array('userid' => $user->id, 'factor' => $this->name));
 
         if (!empty($records)) {
             return $records;
@@ -47,10 +45,10 @@ class factor extends object_factor_base {
 
         // Null records returned, build new record.
         $record = array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
             'timecreated' => time(),
-            'createdfromip' => $USER->lastip,
+            'createdfromip' => $user->lastip,
             'timemodified' => time(),
             'revoked' => 0,
         );
@@ -80,13 +78,10 @@ class factor extends object_factor_base {
         $safetypes = get_config('factor_auth', 'goodauth');
         if (strlen($safetypes) != 0) {
             $safetypes = explode(',', $safetypes);
-            $authtypes = get_enabled_auth_plugins(true);
 
             // Check all safetypes against user auth.
-            foreach ($safetypes as $type) {
-                if ($authtypes[$type] == $USER->auth) {
-                    return \tool_mfa\plugininfo\factor::STATE_PASS;
-                }
+            if (in_array($USER->auth, $safetypes, true)) {
+                return \tool_mfa\plugininfo\factor::STATE_PASS;
             }
             return \tool_mfa\plugininfo\factor::STATE_NEUTRAL;
         } else {
@@ -112,16 +107,7 @@ class factor extends object_factor_base {
      */
     public function get_summary_condition() {
         $safetypes = get_config('factor_auth', 'goodauth');
-        $authtypes = get_enabled_auth_plugins(true);
-        $string = '';
 
-        if (strlen($safetypes) > 0) {
-            $safetypes = explode(',', $safetypes);
-            foreach ($safetypes as $type) {
-                $string .= $authtypes[$type];
-            }
-        }
-
-        return get_string('summarycondition', 'factor_'.$this->name, $string);
+        return get_string('summarycondition', 'factor_'.$this->name, $safetypes);
     }
 }

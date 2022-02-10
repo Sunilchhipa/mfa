@@ -25,8 +25,6 @@
 
 namespace tool_mfa\local\factor;
 
-defined('MOODLE_INTERNAL') || die();
-
 abstract class object_factor_base implements object_factor {
     /**
      * Factor name.
@@ -36,13 +34,63 @@ abstract class object_factor_base implements object_factor {
     public $name;
 
     /**
+     * Lock counter.
+     */
+    private $lockcounter;
+
+    /**
+     * Secret manager
+     *
+     * @var \tool_mfa\local\secret_manager
+     */
+    protected $secretmanager;
+
+    /**
      * Class constructor
      *
      * @param string factor name
      *
      */
     public function __construct($name) {
+        global $DB, $USER;
         $this->name = $name;
+
+        // Setup secret manager.
+        $this->secretmanager = new \tool_mfa\local\secret_manager($this->name);
+    }
+
+    /**
+     * This loads the locked state from the DB
+     *
+     * Base class implementation.
+     *
+     */
+    public function load_locked_state() {
+        global $DB, $USER;
+
+        // Check if lockcounter column exists (incase upgrade hasnt run yet).
+        // Only 'input factors' are lockable.
+        if ($this->is_enabled() && $this->is_lockable()) {
+            try {
+
+                // Setup the lock counter.
+                $sql = "SELECT MAX(lockcounter) FROM {tool_mfa} WHERE userid = ? AND factor = ? AND revoked = ?";
+                @$this->lockcounter = $DB->get_field_sql($sql, [$USER->id, $this->name, 0]);
+
+                if (empty($this->lockcounter)) {
+                    $this->lockcounter = 0;
+                }
+
+                // Now lock this factor if over the counter.
+                $lockthreshold = get_config('tool_mfa', 'lockout');
+                if ($this->lockcounter >= $lockthreshold) {
+                    $this->set_state(\tool_mfa\plugininfo\factor::STATE_LOCKED);
+                }
+            } catch (\dml_exception $e) {
+                // Set counter to -1.
+                $this->lockcounter = -1;
+            }
+        }
     }
 
     /**
@@ -156,9 +204,10 @@ abstract class object_factor_base implements object_factor {
      *
      * Dummy implementation. Should be overridden in child class.
      *
+     * @param stdClass user the user to check against.
      * @return array
      */
-    public function get_all_user_factors() {
+    public function get_all_user_factors($user) {
         return array();
     }
 
@@ -166,11 +215,12 @@ abstract class object_factor_base implements object_factor {
      * Returns an array of active user factor records.
      * Filters get_all_user_factors() output.
      *
+     * @param stdClass user object to check against.
      * @return array
      */
-    public function get_active_user_factors() {
+    public function get_active_user_factors($user) {
         $return = array();
-        $factors = $this->get_all_user_factors();
+        $factors = $this->get_all_user_factors($user);
         foreach ($factors as $factor) {
             if ($factor->revoked == 0) {
                 $return[] = $factor;
@@ -270,6 +320,19 @@ abstract class object_factor_base implements object_factor {
     }
 
     /**
+     * Gets lastverified timestamp.
+     *
+     * @param int $factorid
+     * @return int|bool the lastverified timestamp, or false if not found.
+     */
+    public function get_lastverified($factorid) {
+        global $DB;
+
+        $record = $DB->get_record('tool_mfa', array('id' => $factorid));
+        return $record->lastverified;
+    }
+
+    /**
      * Returns true if factor needs to be setup by user and has setup_form.
      *
      * Override in child class if necessary.
@@ -281,6 +344,15 @@ abstract class object_factor_base implements object_factor {
     }
 
     /**
+     * If has_setup returns true, decides if the setup buttons should be shown on the preferences page.
+     *
+     * @return bool
+     */
+    public function show_setup_buttons() {
+        return $this->has_setup();
+    }
+
+    /**
      * Returns true if a factor requires input from the user to verify.
      *
      * Override in child class if necessary
@@ -289,6 +361,18 @@ abstract class object_factor_base implements object_factor {
      */
     public function has_input() {
         return true;
+    }
+
+    /**
+     * Returns true if a factor is able to be locked if it fails.
+     *
+     * Generally only input factors are lockable.
+     * Override in child class if necessary
+     *
+     * @return bool
+     */
+    public function is_lockable() {
+        return $this->has_input();
     }
 
     /**
@@ -353,6 +437,9 @@ abstract class object_factor_base implements object_factor {
         if ($this->get_state() == \tool_mfa\plugininfo\factor::STATE_PASS) {
             $this->update_lastverified();
         }
+
+        // Now clean temp secrets for factor.
+        $this->secretmanager->cleanup_temp_secrets();
     }
 
     /**
@@ -377,7 +464,7 @@ abstract class object_factor_base implements object_factor {
      * E.g. IP changes based on whether a user is using a VPN.
      */
     public function possible_states($user) {
-        return $this->get_state();
+        return array($this->get_state());
     }
 
     /**
@@ -403,5 +490,113 @@ abstract class object_factor_base implements object_factor {
      */
     public function get_setup_string() {
         return get_string('setupfactor', 'tool_mfa');
+    }
+
+    /**
+     * Deletes all instances of factor for a user.
+     *
+     * @param stdClass $user the user to delete for.
+     */
+    public function delete_factor_for_user($user) {
+        global $DB, $USER;
+        $DB->delete_records('tool_mfa', array('userid' => $user->id, 'factor' => $this->name));
+
+        // Emit event for deletion.
+        $event = \tool_mfa\event\user_deleted_factor::user_deleted_factor_event($user, $USER, $this->name);
+        $event->trigger();
+    }
+
+    /**
+     * Increments the lock counter for a factor.
+     *
+     * @return void
+     */
+    public function increment_lock_counter() {
+        global $DB, $USER;
+
+        // First make sure the state is loaded.
+        $this->load_locked_state();
+
+        // If lockcounter is negative, the field does not exist yet.
+        if ($this->lockcounter === -1) {
+            return;
+        }
+
+        $this->lockcounter++;
+        // Update record in DB.
+        $DB->set_field('tool_mfa', 'lockcounter', $this->lockcounter, ['userid' => $USER->id, 'factor' => $this->name]);
+
+        // Now lock this factor if over the counter.
+        $lockthreshold = get_config('tool_mfa', 'lockout');
+        if ($this->lockcounter >= $lockthreshold) {
+            $this->set_state(\tool_mfa\plugininfo\factor::STATE_LOCKED);
+
+            // Lastly output a notification showing the user the factor is locked.
+            \core\notification::error(get_string('factorlocked', 'tool_mfa', $this->get_display_name()));
+        }
+    }
+
+    /**
+     * Return the number of remaining attempts at this factor.
+     *
+     * @return int the number of attempts at this factor remaining.
+     */
+    public function get_remaining_attempts() {
+        $lockthreshold = get_config('tool_mfa', 'lockout');
+        if ($this->lockcounter === -1) {
+            // If upgrade.php hasnt been run yet, just return 10.
+            return $lockthreshold;
+        } else {
+            return $lockthreshold - $this->lockcounter;
+        }
+    }
+
+    /**
+     * Process a cancel input from a user.
+     *
+     * @return void
+     */
+    public function process_cancel_action() {
+        $this->set_state(\tool_mfa\plugininfo\factor::STATE_NEUTRAL);
+    }
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param $mform Form to inject global elements into.
+     * @return void
+     */
+    public function global_definition($mform) {
+        return;
+    }
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param $mform Form to inject global elements into.
+     * @return void
+     */
+    public function global_definition_after_data($mform) {
+        return;
+    }
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param array $data Data from the form.
+     * @param array $files Files form the form.
+     * @return array of errors from validation.
+     */
+    public function global_validation($data, $files): array {
+        return [];
+    }
+
+    /**
+     * Hook point for global auth form action hooks.
+     *
+     * @param object $data Data from the form.
+     */
+    public function global_submit($data) {
+        return;
     }
 }

@@ -37,6 +37,27 @@ $settings->add(new admin_setting_configduration('factor_email/duration',
     get_string('settings:duration', 'factor_email'),
     get_string('settings:duration_help', 'factor_email'), 30 * MINSECS, MINSECS));
 
+$options = array(
+    '0' => get_string('settings:emailonly', 'factor_email'),
+    '1' => get_string('settings:smsonly', 'factor_email'),
+    '2' => get_string('settings:emailandsmsboth', 'factor_email')
+);
+$settings->add(new admin_setting_configselect('factor_email/type',
+    get_string('settings:type', 'factor_email'),
+    get_string('settings:type_help', 'factor_email'), 0, $options));
+
+$settings->add(new admin_setting_configtext('factor_email/twiliosid',
+    get_string('settings:twiliosid', 'factor_email'),
+    get_string('settings:twiliosid_help', 'factor_email'), '', PARAM_RAW));
+
+$settings->add(new admin_setting_configtext('factor_email/twiliotoken',
+    get_string('settings:twiliotoken', 'factor_email'),
+    get_string('settings:twiliotoken_help', 'factor_email'), '', PARAM_RAW));
+
+$settings->add(new admin_setting_configtext('factor_email/twiliophone',
+    get_string('settings:twiliophone', 'factor_email'),
+    get_string('settings:twiliophone_help', 'factor_email'), '', PARAM_RAW));
+
 $settings->add(new admin_setting_configcheckbox('factor_email/suspend',
     get_string('settings:suspend', 'factor_email'),
     get_string('settings:suspend_help', 'factor_email'), 0));

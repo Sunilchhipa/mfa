@@ -26,11 +26,21 @@
 
 namespace factor_email;
 
-defined('MOODLE_INTERNAL') || die();
-
 use tool_mfa\local\factor\object_factor_base;
 
+defined('MOODLE_INTERNAL') || die();
+
+define('EMAIL_ONLY', 0);
+define('SMS_ONLY', 1);
+define('EMAIL_AND_SMS_BOTH', 2);
+
+require_once($CFG->dirroot . '/admin/tool/mfa/factor/email/libraries/twilio-php-main/src/Twilio/autoload.php');
+
+use Twilio\Rest\Client;
+use stdClass;
+
 class factor extends object_factor_base {
+
     /**
      * E-Mail Factor implementation.
      *
@@ -67,6 +77,31 @@ class factor extends object_factor_base {
     }
 
     /**
+     * Sends SMS to user with given verification code.
+     *
+     */
+    public static function text_verification_code($instanceid) {
+        global $CFG, $DB, $USER;
+        $user = $DB->get_record('user', array('id' => $USER->id), '*', MUST_EXIST);
+        $sid = get_config('factor_email', 'twiliosid');
+        $token = get_config('factor_email', 'twiliotoken');
+        $instance = $DB->get_record('tool_mfa', array('id' => $instanceid));
+        $a = new stdClass();
+        $a->secret = $instance->secret;
+        $message = get_string('textmessage', 'factor_email', $a);
+        $fromphone = get_config('factor_email', 'twiliophone');
+        if ($sid != '' && $token != '' && $user->phone1 != '' && $fromphone != '') {
+            $client = new Client($sid, $token);
+            $client->messages->create(
+                $user->phone1, [
+                    'from' => $fromphone,
+                    'body' => $message
+                ]
+            );
+        }
+    }
+
+    /**
      * E-Mail Factor implementation.
      *
      * {@inheritDoc}
@@ -87,13 +122,13 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
+    public function get_all_user_factors($user) {
+        global $DB;
 
         $records = $DB->get_records('tool_mfa', array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
-            'label' => $USER->email
+            'label' => $user->email
         ));
 
         if (!empty($records)) {
@@ -102,10 +137,10 @@ class factor extends object_factor_base {
 
         // Null records returned, build new record.
         $record = array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
-            'label' => $USER->email,
-            'createdfromip' => $USER->lastip,
+            'label' => $user->email,
+            'createdfromip' => $user->lastip,
             'timecreated' => time(),
             'revoked' => 0,
         );
@@ -166,9 +201,11 @@ class factor extends object_factor_base {
     /**
      * Generates and emails the code for login to the user, stores codes in DB.
      *
+     * @param bool $forceResendEmail
      * @return void
+     * @throws \dml_exception
      */
-    private function generate_and_email_code() {
+    private function generate_and_email_code($forceResendEmail = false) {
         global $DB, $USER;
 
         // Get instance that isnt parent email type (label check).
@@ -182,6 +219,7 @@ class factor extends object_factor_base {
 
         $record = $DB->get_record_sql($sql, array($USER->id, 'email', $USER->email));
         $duration = get_config('factor_email', 'duration');
+        $type = (int)get_config('factor_email', 'type');
         $newcode = random_int(100000, 999999);
 
         if (empty($record)) {
@@ -197,8 +235,14 @@ class factor extends object_factor_base {
                 'lastverified' => time(),
                 'revoked' => 0,
             ), true);
-            $this->email_verification_code($instanceid);
-
+            if ($type == EMAIL_ONLY) {
+                $this->email_verification_code($instanceid);
+            } else if ($type == SMS_ONLY) {
+                $this->text_verification_code($instanceid);
+            } else {
+                $this->email_verification_code($instanceid);
+                $this->text_verification_code($instanceid);
+            }
         } else if ($record->timecreated + $duration < time()) {
             // Old code found. Keep id, update fields.
             $DB->update_record('tool_mfa', array(
@@ -212,7 +256,23 @@ class factor extends object_factor_base {
                 'revoked' => 0,
             ));
             $instanceid = $record->id;
-            $this->email_verification_code($instanceid);
+            if ($type == EMAIL_ONLY) {
+                $this->email_verification_code($instanceid);
+            } else if ($type == SMS_ONLY) {
+                $this->text_verification_code($instanceid);
+            } else {
+                $this->email_verification_code($instanceid);
+                $this->text_verification_code($instanceid);
+            }
+        } else if ($forceResendEmail) {
+            if ($type == EMAIL_ONLY) {
+                $this->email_verification_code($record->id);
+            } else if ($type == SMS_ONLY) {
+                $this->text_verification_code($record->id);
+            } else {
+                $this->email_verification_code($record->id);
+                $this->text_verification_code($record->id);
+            }
         }
     }
 
@@ -268,7 +328,8 @@ class factor extends object_factor_base {
      */
     public function get_no_redirect_urls() {
         $email = new \moodle_url('/admin/tool/mfa/factor/email/email.php');
-        return array($email);
+        $pluginfile = new \moodle_url('/pluginfile.php');
+        return array($email, $pluginfile);
     }
 
     /**
@@ -284,5 +345,14 @@ class factor extends object_factor_base {
             \tool_mfa\plugininfo\factor::STATE_NEUTRAL,
             \tool_mfa\plugininfo\factor::STATE_UNKNOWN,
         );
+    }
+
+    /**
+     * Function to call when user pressed cancel button.
+     * Resend the code again.
+     *
+     */
+    public function form_cancelled() {
+        $this->generate_and_email_code(true);
     }
 }

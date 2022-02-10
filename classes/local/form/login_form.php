@@ -28,6 +28,16 @@ defined('MOODLE_INTERNAL') || die();
 require_once($CFG->libdir . "/formslib.php");
 
 class login_form extends \moodleform {
+
+    /** @var \tool_mfa\local\form\global_form_manager */
+    public $globalmanager;
+
+    public function __construct($action = null, $customdata = null, $method = 'post', $target = '',
+            $attributes = null, $editable = true, $ajaxformdata = null) {
+        $this->globalmanager = new \tool_mfa\local\form\global_form_manager();
+        parent::__construct($action, $customdata, $method, $target, $attributes, $editable, $ajaxformdata);
+    }
+
     /**
      * {@inheritDoc}
      * @see moodleform::definition()
@@ -36,6 +46,14 @@ class login_form extends \moodleform {
         $mform = $this->_form;
         $factor = $this->_customdata['factor'];
         $mform = $factor->login_form_definition($mform);
+
+        $mform->updateAttributes(array('id' => 'email_verification_code_form'));
+        $buttonarray = array();
+        $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
+        $buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
+        $mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
+        $mform->closeHeaderBefore('buttonar');
+        //$this->globalmanager->definition($mform);
     }
 
     /**
@@ -45,14 +63,16 @@ class login_form extends \moodleform {
     public function definition_after_data() {
         $mform = $this->_form;
         $factor = $this->_customdata['factor'];
-
+      
         $mform2 = $factor->login_form_definition_after_data($mform);
+        //$factor->login_form_definition_after_data($mform);
+        //$this->globalmanager->definition_after_data($mform);
 
-        $buttonarray = array();
-        $buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
-        $buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
-        $mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
-        $mform->closeHeaderBefore('buttonar');
+        //$buttonarray = array();
+        //$buttonarray[] = &$mform->createElement('submit', 'submitbutton', get_string('loginsubmit', 'factor_' . $factor->name));
+        //$buttonarray[] = &$mform->createElement('cancel', '', get_string('loginskip', 'factor_' . $factor->name));
+        //$mform->addGroup($buttonarray, 'buttonar', '', array(' '), false);
+        //$mform->closeHeaderBefore('buttonar');
     }
 
     /**
@@ -67,6 +87,7 @@ class login_form extends \moodleform {
 
         $factor = $this->_customdata['factor'];
         $errors += $factor->login_form_validation($data);
+        $errors += $this->globalmanager->validation($data, $files);
 
         // Execute sleep time bruteforce mitigation.
         \tool_mfa\manager::sleep_timer();
