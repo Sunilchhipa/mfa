@@ -25,14 +25,14 @@
 
 namespace tool_mfa\plugininfo;
 
-defined('MOODLE_INTERNAL') || die();
-
 class factor extends \core\plugininfo\base {
 
     const STATE_UNKNOWN = 'unknown';
     const STATE_PASS = 'pass';
     const STATE_FAIL = 'fail';
     const STATE_NEUTRAL = 'neutral';
+    // Locked state is identical to neutral, but can't be overridden.
+    const STATE_LOCKED = 'locked';
 
     /**
      * Finds all MFA factors.
@@ -123,11 +123,32 @@ class factor extends \core\plugininfo\base {
      * @return array of factor objects.
      */
     public static function get_active_user_factor_types() {
+        global $USER;
         $return = array();
         $factors = self::get_enabled_factors();
 
         foreach ($factors as $factor) {
-            $userfactors = $factor->get_active_user_factors();
+            $userfactors = $factor->get_active_user_factors($USER);
+            if (count($userfactors) > 0) {
+                $return[] = $factor;
+            }
+        }
+
+        return $return;
+    }
+
+    /**
+     * Finds active factors for given user.
+     *
+     * @param stdClass $user the user to get types for.
+     * @return array of factor objects.
+     */
+    public static function get_active_other_user_factor_types($user) {
+        $return = array();
+        $factors = self::get_enabled_factors();
+
+        foreach ($factors as $factor) {
+            $userfactors = $factor->get_active_user_factors($user);
             if (count($userfactors) > 0) {
                 $return[] = $factor;
             }

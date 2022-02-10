@@ -121,13 +121,13 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
-        global $DB, $USER;
+    public function get_all_user_factors($user) {
+        global $DB;
 
         $records = $DB->get_records('tool_mfa', array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
-            'label' => $USER->email
+            'label' => $user->email
         ));
 
         if (!empty($records)) {
@@ -136,10 +136,10 @@ class factor extends object_factor_base {
 
         // Null records returned, build new record.
         $record = array(
-            'userid' => $USER->id,
+            'userid' => $user->id,
             'factor' => $this->name,
-            'label' => $USER->email,
-            'createdfromip' => $USER->lastip,
+            'label' => $user->email,
+            'createdfromip' => $user->lastip,
             'timecreated' => time(),
             'revoked' => 0,
         );

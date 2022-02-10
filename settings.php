@@ -28,6 +28,9 @@ defined('MOODLE_INTERNAL') || die();
 if ($hassiteconfig) {
 
     $ADMIN->add('tools', new admin_category('toolmfafolder', new lang_string('pluginname', 'tool_mfa'), false));
+    $ADMIN->add('toolmfafolder', new admin_externalpage('tool_mfa_resetfactor',
+    get_string('resetfactor', 'tool_mfa'),
+    new moodle_url('/admin/tool/mfa/reset_factor.php')));
 
     $settings = new admin_settingpage('managemfa', new lang_string('mfasettings', 'tool_mfa'));
     $settings->add(new \tool_mfa\local\admin_setting_managemfa());
@@ -47,14 +50,40 @@ if ($hassiteconfig) {
     $description = new lang_string('settings:debugmode_help', 'tool_mfa');
     $settings->add(new admin_setting_configcheckbox('tool_mfa/debugmode', $name, $description, false));
 
+    $name = new lang_string('settings:redir_exclusions', 'tool_mfa');
+    $description = new lang_string('settings:redir_exclusions_help', 'tool_mfa');
+    $settings->add(new admin_setting_configtextarea('tool_mfa/redir_exclusions', $name, $description, ''));
+
+    $name = new lang_string('settings:guidancecheck', 'tool_mfa');
+    $description = new lang_string('settings:guidancecheck_help', 'tool_mfa');
+    $settings->add(new admin_setting_configcheckbox('tool_mfa/guidance', $name, $description, false));
+
+    $name = new lang_string('settings:guidancepage', 'tool_mfa');
+    $description = new lang_string('settings:guidancepage_help', 'tool_mfa');
+    $settings->add(new admin_setting_confightmleditor('tool_mfa/guidancecontent', $name, $description, '', PARAM_RAW));
+
+    $name = new lang_string('settings:guidancefiles', 'tool_mfa');
+    $description = new lang_string('settings:guidancefiles_help', 'tool_mfa');
+    $settings->add(new admin_setting_configstoredfile('tool_mfa/guidancefiles', $name, $description, 'guidance', 0, [
+                'maxfiles' => -1
+            ]));
+
     $ADMIN->add('toolmfafolder', $settings);
 
     foreach (core_plugin_manager::instance()->get_plugins_of_type('factor') as $plugin) {
         $plugin->load_settings($ADMIN, 'toolmfafolder', $hassiteconfig);
     }
 
-    $ADMIN->add('reports', new admin_category('toolmfareports', get_string('mfareports', 'tool_mfa')));
-    $ADMIN->add('toolmfareports',
-        new admin_externalpage('factorreport', get_string('factorreport', 'tool_mfa'),
-        new moodle_url('/admin/tool/mfa/factor_report.php')));
+    if (file_exists($CFG->dirroot . '/totara')) {
+        // Totara navigation.
+        $section = 'toolmfafolder';
+    } else {
+        // Moodle navigation.
+        $ADMIN->add('reports', new admin_category('toolmfareports', get_string('mfareports', 'tool_mfa')));
+        $section = 'toolmfareports';
+    }
+    $ADMIN->add($section,
+            new admin_externalpage('factorreport', get_string('factorreport', 'tool_mfa'),
+            new moodle_url('/admin/tool/mfa/factor_report.php')));
+
 }

@@ -25,8 +25,6 @@
 
 namespace factor_secq;
 
-defined('MOODLE_INTERNAL') || die();
-
 use tool_mfa\local\factor\object_factor_base;
 
 class factor extends object_factor_base {
@@ -46,7 +44,7 @@ class factor extends object_factor_base {
      *
      * {@inheritDoc}
      */
-    public function get_all_user_factors() {
+    public function get_all_user_factors($user) {
         // FACTOR FUNCTIONALITY HERE.
         return array();
     }
