@@ -33,8 +33,8 @@ require_login(null, false);
 $context = context_user::instance($USER->id);
 $PAGE->set_context($context);
 $PAGE->set_url('/admin/tool/mfa/auth.php');
-$PAGE->set_pagelayout('secure');
-$pagetitle = $SITE->shortname.': '.get_string('mfa', 'tool_mfa');
+$PAGE->set_pagelayout('auth');
+$pagetitle = $SITE->fullname;
 $PAGE->set_title($pagetitle);
 
 $OUTPUT = $PAGE->get_renderer('tool_mfa');
@@ -47,7 +47,14 @@ $currenturl = new moodle_url('/admin/tool/mfa/auth.php');
 $factor = \tool_mfa\plugininfo\factor::get_next_user_factor();
 // If ok, perform form actions for input factor.
 $form = new login_form($currenturl, array('factor' => $factor));
-if ($form->is_submitted()) {
+if (method_exists($factor, 'form_cancelled') && $form->is_cancelled()) {
+    $factor->form_cancelled();
+    echo $OUTPUT->header();
+    echo $OUTPUT->notification(get_string('resentemail', 'factor_' . $factor->name), 'notifysuccess');
+    $form->display();
+    echo $OUTPUT->footer();
+    die;
+} else if ($form->is_submitted()) {
     if (!$form->is_validated() && !$form->is_cancelled()) {
         // End user session if too many failed attempts.
         empty($SESSION->mfa_fail_counter)
@@ -82,7 +89,7 @@ echo $OUTPUT->header();
 
 \tool_mfa\manager::display_debug_notification();
 
-echo $OUTPUT->heading(get_string('pluginname', 'factor_'.$factor->name));
+//echo $OUTPUT->heading(get_string('pluginname', 'factor_'.$factor->name));
 if (!empty($SESSION->mfa_fail_counter)) {
     $remaining = get_config('tool_mfa', 'lockout') - $SESSION->mfa_fail_counter;
     echo $OUTPUT->notification(get_string('lockoutnotification', 'tool_mfa', $remaining), 'notifyerror');

@@ -35,7 +35,7 @@ $PAGE->set_context($context);
 $url = new moodle_url('/admin/tool/mfa/factor/email/email.php',
     array('instance' => $instanceid, 'pass' => $pass, 'secret' => $secret));
 $PAGE->set_url($url);
-$PAGE->set_pagelayout('secure');
+$PAGE->set_pagelayout('auth');
 $PAGE->set_title(get_string('unauthemail', 'factor_email'));
 $PAGE->set_cacheable(false);
 $instance = $DB->get_record('tool_mfa', array('id' => $instanceid));
