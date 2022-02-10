@@ -15,10 +15,10 @@
 // along with Moodle.  If not, see <http://www.gnu.org/licenses/>.
 
 /**
- * Event for successful MFA authorization.
+ * Event for deleted user Factor.
  *
  * @package     tool_mfa
- * @author      Mikhail Golenkov <golenkovm@gmail.com>
+ * @author      Peter Burnett <peterburnett@catalyst-au.net>
  * @copyright   Catalyst IT
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
@@ -28,43 +28,39 @@ namespace tool_mfa\event;
 defined('MOODLE_INTERNAL') || die();
 
 /**
- * Event for when user successfully passed all MFA factor checks.
+ * Event for when user factor is deleted.
  *
  * @property-read array $other {
  *      Extra information about event.
  * }
  *
  * @package     tool_mfa
- * @author      Mikhail Golenkov <golenkovm@gmail.com>
+ * @author      Peter Burnett <peterburnett@catalyst-au.net>
  * @copyright   Catalyst IT
  * @license     http://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
 
-class user_passed_mfa extends \core\event\base {
+class user_deleted_factor extends \core\event\base {
     /**
      * Create instance of event.
      *
-     * @param int $user the User object of the User who passed all MFA factor checks.
+     * @param stdClass $user the User object of the User who had the factor deleted.
+     * @param stdClass $deleteuser the user who performed the factor delete.
+     * @param string $factorname deleted factor
      *
-     * @return user_passed_mfa the user_passed_mfa event
+     * @return user_factor_deleted the user_factor_deleted event
      *
      * @throws \coding_exception
      */
-    public static function user_passed_mfa_event($user) {
-
-        // Build debug info string.
-        $factors = \tool_mfa\plugininfo\factor::get_active_user_factor_types();
-        $debug = '';
-        foreach ($factors as $factor) {
-            $debug .= "<br> Factor {$factor->name} status: {$factor->get_state()}";
-        }
+    public static function user_deleted_factor_event($user, $deleteuser, $factorname) {
 
         $data = array(
-            'relateduserid' => null,
+            'relateduserid' => $user->id,
             'context' => \context_user::instance($user->id),
             'other' => array (
                 'userid' => $user->id,
-                'debug' => $debug
+                'factorname' => $factorname,
+                'delete' => $deleteuser
             )
         );
 
@@ -77,7 +73,7 @@ class user_passed_mfa extends \core\event\base {
      * @return void
      */
     protected function init() {
-        $this->data['crud'] = 'r';
+        $this->data['crud'] = 'd';
         $this->data['edulevel'] = self::LEVEL_OTHER;
     }
 
@@ -87,7 +83,7 @@ class user_passed_mfa extends \core\event\base {
      * @return string
      */
     public function get_description() {
-        return "The user with id '{$this->other['userid']}' successfully passed MFA. <br> Information: {$this->other['debug']}";
+        return "The user with id '{$this->other['delete']->id}' successfully deleted {$this->other['factorname']} factor for user with id '{$this->other['userid']}'";
     }
 
     /**
@@ -97,6 +93,6 @@ class user_passed_mfa extends \core\event\base {
      * @throws \coding_exception
      */
     public static function get_name() {
-        return get_string('event:userpassedmfa', 'tool_mfa');
+        return get_string('event:userdeletedfactor', 'tool_mfa');
     }
 }
